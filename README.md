@@ -1,0 +1,2 @@
+# Sambandikru
+Sambadikru manegal
