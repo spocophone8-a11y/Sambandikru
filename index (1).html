@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#2563eb">
+<link rel="manifest" href="manifest.json">
+<title>Family Records</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,sans-serif;background:#f3f4f6;color:#111}
+header{background:#2563eb;color:#fff;padding:12px 16px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+nav{display:flex;background:#fff;position:sticky;top:0;box-shadow:0 1px 3px #0002}
+nav button{flex:1;padding:14px;border:0;background:none;font-size:16px;border-bottom:3px solid transparent}
+nav button.on{border-color:#2563eb;color:#2563eb;font-weight:600}
+main{padding:14px;max-width:600px;margin:auto}section{display:none}section.on{display:block}
+label{display:block;margin:10px 0 4px;font-size:14px;color:#444}
+input{width:100%;padding:12px;font-size:16px;border:1px solid #ccc;border-radius:8px;background:#fff}
+button.p{width:100%;margin-top:16px;padding:14px;font-size:16px;border:0;border-radius:8px;background:#2563eb;color:#fff}
+button.s{padding:8px 12px;border:1px solid #2563eb;color:#2563eb;background:#fff;border-radius:8px;margin:4px 4px 0 0}
+.card{background:#fff;border-radius:10px;padding:12px;margin:10px 0;display:flex;gap:12px;box-shadow:0 1px 2px #0002}
+.card img{width:70px;height:70px;object-fit:cover;border-radius:8px}
+.card h3{margin:0 0 4px}.card p{margin:2px 0;font-size:14px}
+.tag{font-size:12px;padding:2px 6px;border-radius:6px;background:#fde68a}.tag.ok{background:#bbf7d0}
+a{color:#2563eb}#msg{text-align:center;color:#166534;min-height:20px;margin-top:8px}
+</style></head><body>
+<header><span>Family Records</span><span id="net" style="font-size:12px"></span></header>
+<nav><button id="t1" class="on" onclick="tab(1)">Entry</button><button id="t2" onclick="tab(2)">View</button></nav>
+<main>
+<section id="s1" class="on">
+ <div id="editbar" style="display:none;background:#fef3c7;padding:8px;border-radius:8px;margin-bottom:8px">Editing: <b id="editname"></b> <button class="s" onclick="cancelEdit()">Cancel</button></div>
+ <label>Family name *</label><input id="fam">
+ <label>Place name *</label><input id="place">
+ <label>Location (paste Google Maps link)</label><input id="loc" inputmode="url">
+ <label>Phone</label><input id="ph" type="tel">
+ <label>Photo</label><input id="photo" type="file" accept="image/*">
+ <button class="p" id="savebtn" onclick="save()">Save</button><div id="msg"></div>
+</section>
+<section id="s2">
+ <input id="q" type="search" placeholder="Search family or place name" oninput="render()">
+ <div><button class="s" onclick="exportXlsx()">Export Excel</button><button class="s" onclick="$('imp').click()">Import Excel</button><button class="s" onclick="sync()">Sync to Google</button><button class="s" onclick="setUrl()">Set script URL</button></div>
+ <input id="imp" type="file" accept=".xlsx" style="display:none" onchange="importXlsx(this)">
+ <div id="count" style="margin:8px 0;font-size:14px;color:#555"></div><div id="list"></div>
+</section>
+</main>
+<script>
+let db,data=[],editId=null;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function tab(n){if(n==2&&editId)clearForm();[1,2].forEach(i=>{$('s'+i).classList.toggle('on',i==n);$('t'+i).classList.toggle('on',i==n)});if(n==2)load()}
+const op=indexedDB.open('famdb',1);
+op.onupgradeneeded=()=>op.result.createObjectStore('r',{keyPath:'id'});
+op.onsuccess=()=>{db=op.result;load();autoSync(false)};
+if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
+const store=m=>db.transaction('r',m).objectStore('r');
+const load=()=>{store('readonly').getAll().onsuccess=e=>{data=e.target.result.sort((a,b)=>(b.date||'').localeCompare(a.date||''));render()}};
+const all=()=>new Promise(res=>store('readonly').getAll().onsuccess=e=>res(e.target.result));
+function upd(id,fn){return new Promise(res=>{const s=store('readwrite'),g=s.get(id);g.onsuccess=()=>{const r=g.result;if(r){fn(r);s.put(r)}};s.transaction.oncomplete=()=>res()})}
+function toggleSync(id){upd(id,x=>{x.synced=!x.synced;if(x.synced)x.pending=false}).then(load)}
+function resize(file){return new Promise(res=>{if(!file)return res('');const img=new Image();img.onload=()=>{const m=260,k=Math.min(1,m/Math.max(img.width,img.height)),c=document.createElement('canvas');c.width=img.width*k;c.height=img.height*k;c.getContext('2d').drawImage(img,0,0,c.width,c.height);res(c.toDataURL('image/jpeg',.6))};img.src=URL.createObjectURL(file)})}
+async function save(){
+ const fam=$('fam').value.trim(),place=$('place').value.trim();
+ if(!fam||!place){alert('Family name and place name are required');return}
+ const old=editId?data.find(x=>x.id==editId):null,np=await resize($('photo').files[0]);
+ const r={id:old?old.id:Date.now()+'-'+Math.random().toString(36).slice(2,6),date:old?old.date:new Date().toISOString(),fam,place,loc:$('loc').value.trim(),ph:$('ph').value.trim(),photo:np||(old?old.photo:''),synced:old?!!old.synced:false,pending:true,v:(old?old.v||0:0)+1};
+ store('readwrite').put(r).transaction.oncomplete=()=>{clearForm();$('msg').textContent='Saved ✓';setTimeout(()=>$('msg').textContent='',2000);load();autoSync(false)}
+}
+function clearForm(){['fam','place','loc','ph','photo'].forEach(i=>$(i).value='');editId=null;$('editbar').style.display='none';$('savebtn').textContent='Save'}
+function cancelEdit(){clearForm()}
+function edit(id){const r=data.find(x=>x.id==id);$('fam').value=r.fam;$('place').value=r.place;$('loc').value=r.loc||'';$('ph').value=r.ph||'';editId=id;$('editname').textContent=r.fam;$('editbar').style.display='block';$('savebtn').textContent='Update';tab(1);scrollTo(0,0)}
+function render(){
+ const q=$('q').value.toLowerCase().trim();
+ const f=data.filter(r=>!q||r.fam.toLowerCase().includes(q)||r.place.toLowerCase().includes(q));
+ $('count').textContent=f.length+' of '+data.length+' records';
+ $('list').innerHTML=f.map(r=>`<div class="card">${r.photo?`<img src="${r.photo}">`:''}<div style="flex:1"><h3>${esc(r.fam)}</h3><p>📍 ${esc(r.place)}</p>${r.ph?`<p>📞 <a href="tel:${esc(r.ph)}">${esc(r.ph)}</a></p>`:''}${r.loc?`<p><a href="${esc(r.loc)}" target="_blank" rel="noopener">Open map</a></p>`:''}<span class="tag ${r.synced?'ok':''}">${r.synced?'synced':'not synced'}${r.pending&&r.synced?' · update queued':''}</span> <button class="s" onclick="toggleSync('${r.id}')">${r.synced?'Unsync':'Mark synced'}</button><button class="s" onclick="edit('${r.id}')">Edit</button><button class="s" onclick="del('${r.id}')">Delete</button></div></div>`).join('')
+}
+function del(id){if(confirm('Delete this record?'))store('readwrite').delete(id).transaction.oncomplete=load}
+
+/* ---- minimal .xlsx writer/reader (no libraries, works offline) ---- */
+const HDR=['ID','Date','Family name','Place name','Location','Phone','Photo','Synced'];
+const CT=(()=>{let t=[],c;for(let n=0;n<256;n++){c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+const crc=u=>{let c=-1;for(let i=0;i<u.length;i++)c=CT[(c^u[i])&255]^(c>>>8);return(c^-1)>>>0};
+const pk=s=>{const b=new Uint8Array(s.reduce((a,x)=>a+x[0],0)),v=new DataView(b.buffer);let o=0;for(const[n,x]of s){n==4?v.setUint32(o,x,true):v.setUint16(o,x,true);o+=n}return b};
+function zip(files){const enc=new TextEncoder,parts=[],cen=[];let off=0;
+ for(const[name,txt]of files){const nm=enc.encode(name),d=enc.encode(txt),c=crc(d),L=d.length;
+  const lh=pk([[4,0x04034b50],[2,20],[2,0x800],[2,0],[2,0],[2,33],[4,c],[4,L],[4,L],[2,nm.length],[2,0]]);
+  parts.push(lh,nm,d);
+  cen.push(pk([[4,0x02014b50],[2,20],[2,20],[2,0x800],[2,0],[2,0],[2,33],[4,c],[4,L],[4,L],[2,nm.length],[2,0],[2,0],[2,0],[2,0],[4,0],[4,off]]),nm);
+  off+=lh.length+nm.length+L}
+ const cs=cen.reduce((a,x)=>a+x.length,0);
+ return new Blob([...parts,...cen,pk([[4,0x06054b50],[2,0],[2,0],[2,files.length],[2,files.length],[4,cs],[4,off],[2,0]])],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})}
+const xe=s=>String(s==null?'':s).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function exportXlsx(){
+ const rows=[HDR].concat(data.map(r=>[r.id,r.date,r.fam,r.place,r.loc,r.ph,r.photo,r.synced?'Yes':'No']));
+ const sheet='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>'+rows.map((r,i)=>`<row r="${i+1}">`+r.map((v,j)=>`<c r="${'ABCDEFGH'[j]}${i+1}" t="inlineStr"><is><t xml:space="preserve">${xe(v)}</t></is></c>`).join('')+'</row>').join('')+'</sheetData></worksheet>';
+ const R='http://schemas.openxmlformats.org/officeDocument/2006/relationships',M='http://schemas.openxmlformats.org/spreadsheetml/2006/main',H='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+ const b=zip([
+  ['[Content_Types].xml',H+'<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>'],
+  ['_rels/.rels',H+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="'+R+'/officeDocument" Target="xl/workbook.xml"/></Relationships>'],
+  ['xl/workbook.xml',H+`<workbook xmlns="${M}" xmlns:r="${R}"><sheets><sheet name="Records" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+  ['xl/_rels/workbook.xml.rels',H+'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="'+R+'/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'],
+  ['xl/worksheets/sheet1.xml',sheet]]);
+ const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='family-records.xlsx';a.click()
+}
+async function unzip(buf){const u=new Uint8Array(buf),v=new DataView(buf),dec=new TextDecoder,out={};let e=u.length-22;
+ while(e>=0&&v.getUint32(e,true)!=0x06054b50)e--;if(e<0)throw 0;
+ const n=v.getUint16(e+10,true);let p=v.getUint32(e+16,true);
+ for(let i=0;i<n;i++){const m=v.getUint16(p+10,true),cs=v.getUint32(p+20,true),nl=v.getUint16(p+28,true),xl=v.getUint16(p+30,true),cl=v.getUint16(p+32,true),lo=v.getUint32(p+42,true),name=dec.decode(u.subarray(p+46,p+46+nl));p+=46+nl+xl+cl;
+  const s=lo+30+v.getUint16(lo+26,true)+v.getUint16(lo+28,true);let d=u.subarray(s,s+cs);
+  if(m==8)d=new Uint8Array(await new Response(new Blob([d]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+  out[name]=dec.decode(d)}return out}
+async function readXlsx(buf){const z=await unzip(buf),P=s=>new DOMParser().parseFromString(s,'application/xml'),tx=el=>[...el.getElementsByTagName('t')].map(t=>t.textContent).join('');
+ const sst=z['xl/sharedStrings.xml']?[...P(z['xl/sharedStrings.xml']).getElementsByTagName('si')].map(tx):[];
+ const sn=Object.keys(z).filter(k=>/^xl\/worksheets\/sheet\d+\.xml$/.test(k)).sort()[0];if(!sn)throw 0;
+ return [...P(z[sn]).getElementsByTagName('row')].map(r=>{const o=[];for(const c of r.getElementsByTagName('c')){
+  const col=c.getAttribute('r').replace(/\d+/g,'').split('').reduce((a,ch)=>a*26+ch.charCodeAt(0)-64,0)-1,t=c.getAttribute('t'),v=c.getElementsByTagName('v')[0];
+  o[col]=t=='s'?sst[+v.textContent]:t=='inlineStr'?tx(c):v?v.textContent:''}return o})}
+async function importXlsx(inp){
+ const f=inp.files[0];inp.value='';if(!f)return;
+ try{
+  const rows=await readXlsx(await f.arrayBuffer()),h=(rows[0]||[]).map(x=>String(x||'').trim().toLowerCase()),ix=n=>h.indexOf(n.toLowerCase());
+  if(ix('Family name')<0||ix('Place name')<0)return alert('This file needs "Family name" and "Place name" columns in the first row.');
+  const tx=store('readwrite');let add=0,upd=0;
+  for(const r of rows.slice(1)){
+   const g=n=>ix(n)<0?'':String(r[ix(n)]==null?'':r[ix(n)]).trim();
+   if(!g('Family name')&&!g('Place name'))continue;
+   const id=g('ID')||Date.now()+'-'+Math.random().toString(36).slice(2,8),old=data.find(x=>x.id==id),sy=ix('Synced')<0?!!(old&&old.synced):/^(yes|true|1)$/i.test(g('Synced'));
+   tx.put({id,date:g('Date')||new Date().toISOString(),fam:g('Family name'),place:g('Place name'),loc:g('Location'),ph:g('Phone'),photo:g('Photo').startsWith('data:image')?g('Photo'):(old?old.photo:''),synced:sy,pending:!sy,v:(old?old.v||0:0)+1});
+   old?upd++:add++}
+  tx.transaction.oncomplete=()=>{alert(add+' added, '+upd+' updated');load()}
+ }catch(e){alert('Could not read this file. Use an .xlsx file (Excel format).')}
+}
+
+function setUrl(){const u=prompt('Paste your Apps Script Web App URL',localStorage.url||'');if(u!==null)localStorage.url=u.trim()}
+let sending=false;
+async function autoSync(manual){
+ if(sending||!db||!localStorage.url||!navigator.onLine)return -1;
+ sending=true;let n=0,tot=0;
+ try{const list=(await all()).filter(x=>manual?(x.pending||!x.synced):x.pending);tot=list.length;
+  for(const r of list){try{await fetch(localStorage.url,{method:'POST',mode:'no-cors',body:JSON.stringify(r)});await upd(r.id,x=>{x.synced=true;if((x.v||0)==(r.v||0))x.pending=false});n++}catch(e){break}}
+ }finally{sending=false}
+ load();return manual?[n,tot]:n
+}
+async function sync(){
+ if(!localStorage.url)return setUrl();
+ if(!navigator.onLine)return alert('You are offline. Try again when online.');
+ const r=await autoSync(true);if(r&&r!=-1)alert(r[0]+' of '+r[1]+' records sent')
+}
+const net=()=>$('net').textContent=navigator.onLine?'online':'offline';
+addEventListener('online',()=>{net();autoSync(false)});addEventListener('offline',net);net();
+if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js');
+</script></body></html>
